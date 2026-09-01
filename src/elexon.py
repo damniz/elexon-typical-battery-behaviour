@@ -1,10 +1,10 @@
-"""Client minimal pour l'API Elexon Insights (BMRS).
+"""Minimal client for the Elexon Insights (BMRS) API.
 
-API publique, aucune clef requise : https://developer.data.elexon.co.uk/
-Base : https://data.elexon.co.uk/bmrs/api/v1
+Public API, no key required: https://developer.data.elexon.co.uk/
+Base URL: https://data.elexon.co.uk/bmrs/api/v1
 
-Les donnees sont publiees sous licence Elexon ; toute reutilisation doit
-mentionner Elexon comme source.
+Data is published under the Elexon licence; any reuse must credit Elexon
+as the source.
 """
 from __future__ import annotations
 
@@ -23,7 +23,7 @@ _session.headers.update({"Accept": "application/json"})
 
 
 def _iso(ts: datetime) -> str:
-    """Horodatage au format attendu par l'API (UTC)."""
+    """Timestamp in the format the API expects (UTC)."""
     return ts.strftime("%Y-%m-%dT%H:%MZ")
 
 
@@ -36,19 +36,19 @@ def _get(path: str, params: dict | None = None, retries: int = 4) -> Any:
             return response.json()
         except requests.RequestException as exc:
             if attempt == retries - 1:
-                raise RuntimeError(f"GET {url} params={params} a echoue") from exc
+                raise RuntimeError(f"GET {url} params={params} failed") from exc
             time.sleep(2 ** attempt)
 
 
 def _frame(payload: Any) -> pd.DataFrame:
-    """L'API renvoie tantot un tableau nu, tantot un objet {"data": [...]}."""
+    """The API returns either a bare array or an object with a "data" key."""
     if isinstance(payload, dict):
         payload = payload.get("data", [])
     return pd.DataFrame(payload)
 
 
 def bm_units() -> pd.DataFrame:
-    """Liste de reference de toutes les BM Units (quelques milliers de lignes)."""
+    """Reference list of every BM Unit (a few thousand rows)."""
     return _frame(_get("/reference/bmunits/all"))
 
 
@@ -59,10 +59,10 @@ def physical(
     dataset: str = "PN",
     chunk_days: int = 7,
 ) -> pd.DataFrame:
-    """Donnees physiques d'une BM Unit, par tranches pour rester sous les limites API.
+    """Physical data for one BM Unit, chunked to stay within API limits.
 
-    dataset : PN (physical notification), QPN, MELS, MILS.
-    Chaque ligne porte levelFrom / levelTo (MW) sur l'intervalle [timeFrom, timeTo].
+    dataset: PN (physical notification), QPN, MELS, MILS.
+    Each row carries levelFrom / levelTo (MW) over the [timeFrom, timeTo] span.
     """
     frames: list[pd.DataFrame] = []
     cursor, step = start, timedelta(days=chunk_days)
@@ -103,11 +103,11 @@ def acceptances_for_unit(
     end: datetime,
     chunk_days: int = 7,
 ) -> pd.DataFrame:
-    """Acceptations d'offres (BOALF) pour une BM Unit.
+    """Bid-offer acceptances (BOALF) for one BM Unit.
 
-    Beaucoup de batteries GB soumettent une PN nulle et ne bougent que sur
-    acceptation du gestionnaire de reseau : leur profil reel se lit ici, pas
-    dans la PN.
+    Many GB batteries submit a flat zero physical notification and only move
+    when the system operator accepts a bid or an offer. For those assets the
+    real operating profile lives here, not in the PN.
     """
     frames: list[pd.DataFrame] = []
     cursor, step = start, timedelta(days=chunk_days)
@@ -131,24 +131,15 @@ def acceptances_for_unit(
     for column in ("timeFrom", "timeTo", "acceptanceTime"):
         if column in df.columns:
             df[column] = pd.to_datetime(df[column], utc=True)
-    sort_keys = [c for c in ("acceptanceTime", "acceptanceNumber", "timeFrom") if c in df.columns]
+    sort_keys = [c for c in ("acceptanceTime", "acceptanceNumber", "timeFrom")
+                 if c in df.columns]
     return df.sort_values(sort_keys).reset_index(drop=True)
 
 
 def system_prices(day: date) -> pd.DataFrame:
-    """Prix de desequilibre (system buy / system sell) pour une journee."""
+    """Imbalance prices (system buy / system sell) for one settlement date."""
     df = _frame(_get(f"/balancing/settlement/system-prices/{day:%Y-%m-%d}"))
     if df.empty:
         return df
     df["startTime"] = pd.to_datetime(df["startTime"], utc=True)
     return df.sort_values("startTime").reset_index(drop=True)
-
-
-def acceptances(day: date, settlement_period: int) -> pd.DataFrame:
-    """Acceptations d'offres du Balancing Mechanism, toutes BM Units confondues."""
-    return _frame(
-        _get(
-            "/balancing/acceptances/all",
-            {"settlementDate": f"{day:%Y-%m-%d}", "settlementPeriod": settlement_period},
-        )
-    )

@@ -1,15 +1,17 @@
-"""Construit la figure : la même batterie vue a deux horizons.
+"""Build the figure: the same battery seen at two horizons.
 
-Trois panneaux empiles :
-  1. une journee reelle  - puissance de la batterie (decharge / charge)
-  2. la meme journee     - prix de desequilibre du systeme
-  3. douze mois          - profil typique par heure de la journee (mediane + interquartile)
+Three stacked panels:
+  1. one real day  - the battery's power (discharging above zero, charging below);
+  2. the same day  - the system imbalance price;
+  3. twelve months - the typical profile by time of day, with the interquartile range.
 
-Deux echelles differentes ne partagent jamais un meme axe : le prix a son
-propre panneau plutot qu'un second axe y superpose a la puissance.
+Two different scales never share an axis: the price gets its own panel rather
+than a second y-axis laid over the power. A dual axis lets the reader pick
+whichever correlation they want by rescaling; two aligned panels say the same
+thing honestly.
 
-Usage :
-    python src/make_figure.py --bmu T_XXXXX-1 --day 2026-06-18
+Usage:
+    python src/make_figure.py --bmu E_STALB-1 --day 2026-07-25 --stat mean
 """
 from __future__ import annotations
 
@@ -29,6 +31,16 @@ FIGURES = ROOT / "figures"
 
 TZ = "Europe/London"
 
+# Validated diverging palette (blue <-> red, grey midpoint) on a light surface.
+SURFACE = "#fcfcfb"
+DISCHARGE = "#e34948"   # warm pole: the battery exports
+CHARGE = "#2a78d6"      # cool pole: the battery imports
+INK = "#0b0b0b"
+INK_SECONDARY = "#52514e"
+MUTED = "#898781"
+GRID = "#e1e0d9"
+AXIS = "#c3c2b7"
+
 LABELS = {
     "en": {
         "title": "The same battery, two horizons",
@@ -45,6 +57,7 @@ LABELS = {
         "price_axis": "GBP / MWh",
         "source": "Data: Elexon Insights (BMRS), data.elexon.co.uk",
         "source_boalf": "  ·  profile = physical notification + bid-offer acceptances",
+        "written": "Figure written to",
     },
     "fr": {
         "title": "La même batterie, deux horizons",
@@ -61,20 +74,11 @@ LABELS = {
         "price_axis": "GBP / MWh",
         "source": "Données : Elexon Insights (BMRS), data.elexon.co.uk",
         "source_boalf": "  ·  profil = notification physique + acceptations d'offres",
+        "written": "Figure écrite :",
     },
 }
 
 L = LABELS["en"]
-
-# Palette divergente validee (bleu <-> rouge, midpoint gris) sur surface claire.
-SURFACE = "#fcfcfb"
-DISCHARGE = "#e34948"   # pole chaud : la batterie exporte
-CHARGE = "#2a78d6"      # pole froid : la batterie importe
-INK = "#0b0b0b"
-INK_SECONDARY = "#52514e"
-MUTED = "#898781"
-GRID = "#e1e0d9"
-AXIS = "#c3c2b7"
 
 
 def _style() -> None:
@@ -97,7 +101,7 @@ def _style() -> None:
 
 
 def _points(pn: pd.DataFrame) -> pd.Series:
-    """Transforme les segments PN (levelFrom -> levelTo) en une serie de points."""
+    """Turn PN segments (levelFrom -> levelTo) into a series of points."""
     starts = pn[["timeFrom", "levelFrom"]].rename(
         columns={"timeFrom": "time", "levelFrom": "mw"})
     ends = pn[["timeTo", "levelTo"]].rename(
@@ -110,7 +114,7 @@ def _points(pn: pd.DataFrame) -> pd.Series:
 
 
 def _acceptance_overlay(boalf: pd.DataFrame, index: pd.DatetimeIndex) -> pd.Series:
-    """Niveaux imposes par les acceptations, sur la grille demandee."""
+    """Levels imposed by acceptances, resampled onto the requested grid."""
     overlay = pd.Series(np.nan, index=index)
     if boalf.empty:
         return overlay
@@ -122,7 +126,7 @@ def _acceptance_overlay(boalf: pd.DataFrame, index: pd.DatetimeIndex) -> pd.Seri
         frame["acceptanceTime"] = pd.to_datetime(frame["acceptanceTime"], utc=True)
         frame = frame.sort_values("acceptanceTime")
 
-    # Les acceptations les plus recentes ecrasent les precedentes.
+    # Later acceptances override earlier ones.
     for row in frame.itertuples():
         mask = (index >= row.timeFrom) & (index <= row.timeTo)
         if not mask.any():
@@ -139,7 +143,7 @@ def _acceptance_overlay(boalf: pd.DataFrame, index: pd.DatetimeIndex) -> pd.Seri
 
 def effective_profile(pn: pd.DataFrame, boalf: pd.DataFrame,
                       index: pd.DatetimeIndex) -> tuple[pd.Series, bool]:
-    """Ce que la batterie fait reellement : la PN, ecrasee par les acceptations."""
+    """What the battery actually does: the PN, overridden by acceptances."""
     points = _points(pn)
     if points.empty:
         base = pd.Series(0.0, index=index)
@@ -150,6 +154,32 @@ def effective_profile(pn: pd.DataFrame, boalf: pd.DataFrame,
                       .fillna(0.0))
     overlay = _acceptance_overlay(boalf, index)
     return overlay.fillna(base), bool(overlay.notna().any())
+
+
+def negative_price_spans(prices: pd.DataFrame) -> list[tuple]:
+    """Intervals where the imbalance price drops below zero."""
+    times = pd.to_datetime(prices["startTime"], utc=True).dt.tz_convert(TZ)
+    values = pd.to_numeric(prices["systemSellPrice"], errors="coerce")
+    spans, opened = [], None
+    for moment, value in zip(times, values):
+        if value < 0 and opened is None:
+            opened = moment
+        elif value >= 0 and opened is not None:
+            spans.append((opened, moment))
+            opened = None
+    if opened is not None:
+        spans.append((opened, times.iloc[-1] + pd.Timedelta(minutes=30)))
+    return spans
+
+
+def shade_spans(ax, spans: list[tuple], label: bool = False) -> None:
+    """Same shading on both day panels, so the two read together."""
+    for index, (begin, finish) in enumerate(spans):
+        ax.axvspan(begin, finish, color=MUTED, alpha=0.13, linewidth=0, zorder=0)
+        if label and index == 0:
+            ax.annotate(L["negative"], xy=(finish, ax.get_ylim()[1]),
+                        xytext=(6, -18), textcoords="offset points",
+                        fontsize=13, color=INK_SECONDARY)
 
 
 def _tidy(ax) -> None:
@@ -177,35 +207,12 @@ def panel_day(ax, power: pd.Series) -> None:
                 color=DISCHARGE, fontsize=15, fontweight="bold")
     ax.annotate(L["charge"], xy=(0.012, 0.06), xycoords="axes fraction",
                 color=CHARGE, fontsize=15, fontweight="bold")
+
+    # Symmetric limits: on a diverging encoding the eye compares the two sides.
     reach = float(max(abs(power.max()), abs(power.min()))) * 1.18
     ax.set_ylim(-reach, reach)
     ax.set_xlim(power.index.min(), power.index.max())
     _tidy(ax)
-
-
-def negative_price_spans(prices: pd.DataFrame) -> list[tuple]:
-    """Intervalles ou le prix de desequilibre passe sous zero."""
-    times = pd.to_datetime(prices["startTime"], utc=True).dt.tz_convert(TZ)
-    values = pd.to_numeric(prices["systemSellPrice"], errors="coerce")
-    spans, opened = [], None
-    for moment, value in zip(times, values):
-        if value < 0 and opened is None:
-            opened = moment
-        elif value >= 0 and opened is not None:
-            spans.append((opened, moment))
-            opened = None
-    if opened is not None:
-        spans.append((opened, times.iloc[-1] + pd.Timedelta(minutes=30)))
-    return spans
-
-
-def shade_spans(ax, spans: list[tuple], label: bool = False) -> None:
-    for index, (begin, finish) in enumerate(spans):
-        ax.axvspan(begin, finish, color=MUTED, alpha=0.13, linewidth=0, zorder=0)
-        if label and index == 0:
-            ax.annotate(L["negative"], xy=(finish, ax.get_ylim()[1]),
-                        xytext=(6, -18), textcoords="offset points",
-                        fontsize=13, color=INK_SECONDARY)
 
 
 def panel_price(ax, prices: pd.DataFrame) -> None:
@@ -226,16 +233,16 @@ def panel_typical(ax, power: pd.Series, stat: str = "median") -> None:
 
     central = grouped.median() if stat == "median" else grouped.mean()
     hours = [m / 60 for m in central.index]
-    median = central.values
+    middle = central.values
     low = grouped.quantile(0.25).values
     high = grouped.quantile(0.75).values
 
     ax.fill_between(hours, low, high, color=MUTED, alpha=0.22, linewidth=0)
-    ax.fill_between(hours, 0, median, where=median >= 0,
+    ax.fill_between(hours, 0, middle, where=middle >= 0,
                     color=DISCHARGE, alpha=0.85, interpolate=True, linewidth=0)
-    ax.fill_between(hours, 0, median, where=median <= 0,
+    ax.fill_between(hours, 0, middle, where=middle <= 0,
                     color=CHARGE, alpha=0.85, interpolate=True, linewidth=0)
-    ax.plot(hours, median, color=SURFACE, linewidth=2)
+    ax.plot(hours, middle, color=SURFACE, linewidth=2)
     ax.axhline(0, color=AXIS, linewidth=1.2)
 
     ax.set_xlim(0, 24)
@@ -250,19 +257,20 @@ def panel_typical(ax, power: pd.Series, stat: str = "median") -> None:
 
 
 def main() -> None:
+    global L
+
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--bmu", required=True)
-    parser.add_argument("--day", required=True, help="format YYYY-MM-DD")
+    parser.add_argument("--day", required=True, help="YYYY-MM-DD")
     parser.add_argument("--lang", choices=["en", "fr"], default="en",
-                        help="langue des libelles de la figure")
+                        help="language of the figure labels")
     parser.add_argument("--stat", choices=["median", "mean"], default="median",
-                        help="statistique du panneau long : mediane (robuste) ou moyenne "
-                             "(qui rend compte de l'energie nette)")
+                        help="statistic for the long panel: median (robust) or "
+                             "mean (reflects net energy moved)")
     parser.add_argument("--name", default=None,
-                        help="nom lisible de la batterie pour le titre")
+                        help="readable asset name for the subtitle")
     args = parser.parse_args()
 
-    global L
     L = LABELS[args.lang]
 
     day = date.fromisoformat(args.day)
@@ -292,6 +300,7 @@ def main() -> None:
                              gridspec_kw={"height_ratios": ratios, "hspace": 0.55})
 
     spans = negative_price_spans(prices)
+
     panel_day(axes[0], day_power)
     shade_spans(axes[0], spans, label=True)
     axes[0].set_title(L["day"].format(date=day),
@@ -299,9 +308,8 @@ def main() -> None:
 
     panel_price(axes[1], prices)
     shade_spans(axes[1], spans)
-    axes[1].set_title(L["price"],
-                      loc="left", color=INK, fontweight="bold", pad=12)
-    # même fenêtre temporelle que le panneau du dessus : les deux se lisent ensemble
+    axes[1].set_title(L["price"], loc="left", color=INK, fontweight="bold", pad=12)
+    # Same time window as the panel above, so the two read together.
     axes[1].set_xlim(axes[0].get_xlim())
 
     if has_history:
@@ -316,22 +324,21 @@ def main() -> None:
         axes[2].set_title(L["typical"].format(stat=wording),
                           loc="left", color=INK, fontweight="bold", pad=12)
 
-    fig.suptitle(L["title"],
-                 x=0.055, y=0.985, ha="left", fontsize=22,
+    fig.suptitle(L["title"], x=0.055, y=0.985, ha="left", fontsize=22,
                  fontweight="bold", color=INK)
     fig.text(0.055, 0.938, label, ha="left", fontsize=15, color=INK_SECONDARY)
+
     source = L["source"]
     if day_had_acceptances:
         source += L["source_boalf"]
-    fig.text(0.055, 0.012, source,
-             fontsize=12, color=MUTED)
+    fig.text(0.055, 0.012, source, fontsize=12, color=MUTED)
 
     fig.subplots_adjust(top=0.87, bottom=0.06, left=0.11, right=0.97)
 
     FIGURES.mkdir(exist_ok=True)
     output = FIGURES / f"two_horizons_{slug}_{day}.png"
     fig.savefig(output)
-    print(f"Figure écrite : {output}")
+    print(f"{L['written']} {output}")
 
 
 if __name__ == "__main__":

@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+.env
+
+# Large raw caches: re-downloadable from the API, not worth versioning
+data/*.json
+data/bm_units.csv

@@ -1,16 +1,16 @@
-"""Trouve une journée intéressante à représenter.
+"""Find a day worth plotting.
 
-Une figure n'est lisible que si le prix a bougé ce jour-là. Le script parcourt
-les N derniers jours, mesure la dispersion intra-journalière du prix de
-déséquilibre, et classe les journées.
+A figure only reads if the price moved that day. This script walks back over
+the last N days, measures how dispersed the intraday imbalance price was, and
+ranks the days.
 
-Deux mesures, parce qu'elles ne disent pas la même chose :
-  * `spread`  = max - min, sensible à un seul pic isolé ;
-  * `p90_p10` = écart interdécile, qui décrit une journée franchement agitée.
+Two measures, because they say different things:
+  * `spread`  = max - min, sensitive to a single isolated spike;
+  * `p90_p10` = interdecile range, which describes a genuinely eventful day.
 
-Usage :
+Usage:
     python src/pick_day.py --days 90
-    python src/pick_day.py --days 180 --top 15
+    python src/pick_day.py --days 180 --top 15 --by negativePeriods
 """
 from __future__ import annotations
 
@@ -25,7 +25,7 @@ import elexon
 def scan(days: int) -> pd.DataFrame:
     today = date.today()
     rows = []
-    for offset in range(2, days + 2):          # J-1 n'est pas encore consolide
+    for offset in range(2, days + 2):          # yesterday is not settled yet
         day = today - timedelta(days=offset)
         try:
             prices = elexon.system_prices(day)
@@ -56,18 +56,18 @@ def main() -> None:
                         default="p90_p10")
     args = parser.parse_args()
 
-    print(f"Balayage des {args.days} derniers jours (une requete par jour)...")
+    print(f"Scanning the last {args.days} days (one request per day)...")
     table = scan(args.days)
     if table.empty:
-        raise SystemExit("Aucune donnee de prix recuperee.")
+        raise SystemExit("No price data retrieved.")
 
     ranked = table.sort_values(args.by, ascending=False).head(args.top)
-    print(f"\nJournees les plus agitees, classees par {args.by} :\n")
+    print(f"\nMost eventful days, ranked by {args.by}:\n")
     print(ranked.to_string(index=False))
 
     best = ranked.iloc[0]
-    print("\nEtape suivante :")
-    print(f"  python src/fetch.py --bmu T_BLWNB-1 --day {best['day']} --months 12")
+    print("\nNext step:")
+    print(f"  python src/fetch.py --bmu <BM Unit> --day {best['day']} --months 12")
 
 
 if __name__ == "__main__":

@@ -1,19 +1,19 @@
-"""Classe les batteries candidates selon leur activité réelle dans les données.
+"""Rank candidate batteries by how much they actually do in the data.
 
-Une batterie peut apparaître dans la liste de référence sans rien laisser de
-lisible dans les données d'exploitation : Physical Notification plate à zéro,
-aucune acceptation. C'est le cas de Thornton, par exemple. Choisir une unité
-sur sa seule capacité installée fait donc perdre un aller-retour complet.
+A battery can sit in the reference list and leave nothing readable behind: a
+physical notification flat at zero and no acceptances at all. Thornton Battery
+is one such case - 200 MW installed, nothing in the operational data. Picking
+an asset on installed capacity alone therefore wastes a full round trip.
 
-Ce script échantillonne une période récente pour chaque candidate et mesure :
-  * `pnActivity`    - part des points de PN non nuls ;
-  * `pnPeakMW`      - amplitude atteinte en PN ;
-  * `acceptances`   - nombre d'acceptations sur la période ;
-  * `boalfPeakMW`   - amplitude atteinte sur acceptation.
+This script samples a recent window for each candidate and measures:
+  * `pnActivity`  - share of physical notification points that are non-zero;
+  * `pnPeakMW`    - amplitude reached in the PN;
+  * `acceptances` - number of bid-offer acceptances over the window;
+  * `boalfPeakMW` - amplitude reached through acceptances.
 
-Une bonne candidate a soit une PN vivante, soit beaucoup d'acceptations.
+A good candidate has either a live PN or plenty of acceptances.
 
-Usage :
+Usage:
     python src/screen_units.py --units 25 --days 14
 """
 from __future__ import annotations
@@ -51,9 +51,9 @@ def screen(bm_unit: str, start: datetime, end: datetime) -> dict:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--units", type=int, default=25,
-                        help="nombre de candidates testees, par capacite decroissante")
+                        help="how many candidates to test, largest capacity first")
     parser.add_argument("--days", type=int, default=14,
-                        help="profondeur de l'echantillon")
+                        help="length of the sample window")
     args = parser.parse_args()
 
     candidates = pd.read_csv(DATA / "battery_bmus.csv")
@@ -62,8 +62,8 @@ def main() -> None:
     end = datetime.combine(date.today() - timedelta(days=3),
                            datetime.min.time(), tzinfo=timezone.utc)
     start = end - timedelta(days=args.days)
-    print(f"Echantillon du {start:%Y-%m-%d} au {end:%Y-%m-%d}, "
-          f"{len(shortlist)} unites (deux requetes chacune)\n")
+    print(f"Sampling {start:%Y-%m-%d} to {end:%Y-%m-%d}, "
+          f"{len(shortlist)} units (two requests each)\n")
 
     rows = []
     for position, unit in enumerate(shortlist.itertuples(), start=1):
@@ -71,7 +71,7 @@ def main() -> None:
         try:
             row = screen(unit.elexonBmUnit, start, end)
         except RuntimeError as exc:
-            print(f"  {unit.elexonBmUnit} : echec ({exc})")
+            print(f"  {unit.elexonBmUnit}: failed ({exc})")
             continue
         row["bmUnitName"] = unit.bmUnitName
         row["exportMW"] = unit.exportMW
@@ -79,7 +79,7 @@ def main() -> None:
 
     table = pd.DataFrame(rows)
     if table.empty:
-        raise SystemExit("Aucune unite exploitable.")
+        raise SystemExit("No usable unit found.")
 
     table["score"] = table["pnActivity"] * 100 + table["acceptances"]
     table = table.sort_values("score", ascending=False).reset_index(drop=True)
@@ -91,9 +91,10 @@ def main() -> None:
         print("\n" + table[columns].to_string(index=False))
 
     best = table.iloc[0]
-    print(f"\nMeilleure candidate : {best['elexonBmUnit']} ({best['bmUnitName']})")
-    print("Etape suivante :")
-    print(f"  python src/fetch.py --bmu {best['elexonBmUnit']} --day AAAA-MM-JJ --months 12")
+    print(f"\nBest candidate: {best['elexonBmUnit']} ({best['bmUnitName']})")
+    print("Next step:")
+    print(f"  python src/fetch.py --bmu {best['elexonBmUnit']} "
+          f"--day YYYY-MM-DD --months 12")
 
 
 if __name__ == "__main__":

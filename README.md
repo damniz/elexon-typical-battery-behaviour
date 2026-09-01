@@ -1,27 +1,30 @@
 # elexon-typical-battery-behaviour
 
-Comportement typique d'une batterie du réseau britannique, reconstitué à partir
-des données publiques d'[Elexon Insights (BMRS)](https://developer.data.elexon.co.uk/).
+How a GB grid battery actually behaves, reconstructed from the public
+[Elexon Insights (BMRS)](https://developer.data.elexon.co.uk/) data.
 
-L'API est publique et ne demande aucune clef. Les données sont soumises à la
-[licence d'utilisation Elexon](https://www.elexon.co.uk/bsc/data/balancing-mechanism-reporting-agent/copyright-licence-use-bmrs-api/),
-qui impose de citer la source.
+The API is public and needs no key. The data is covered by the
+[Elexon BMRS API licence](https://www.elexon.co.uk/bsc/data/balancing-mechanism-reporting-agent/copyright-licence-use-bmrs-api/),
+which requires attribution.
 
-## Ce que produit le dépôt
+## What this produces
 
-Une figure carrée 1200 × 1200 à trois panneaux :
+A square 1200 × 1200 figure with three panels:
 
-1. **Une journée** — le profil de puissance d'une batterie nommée, pas demi-horaire
-   (décharge au-dessus de zéro, charge en dessous).
-2. **La même journée** — le prix de déséquilibre du système.
-3. **Douze mois** — le profil médian par heure de la journée, avec l'intervalle
-   interquartile.
+1. **One day** — a named battery's power profile at half-hourly resolution
+   (discharging above zero, charging below).
+2. **The same day** — the system imbalance price.
+3. **Twelve months** — the typical profile by time of day, with the
+   interquartile range.
 
-Les deux échelles (MW et £/MWh) occupent deux panneaux distincts plutôt qu'un
-double axe : superposer deux unités sur un même axe y laisse choisir au lecteur
-la corrélation qu'il veut voir.
+Periods of negative price are shaded on both day panels, so the link between
+the price and what the battery does is visible without cross-referencing.
 
-## Installation
+The two scales (MW and £/MWh) sit in separate panels rather than on a dual
+y-axis. A dual axis lets the reader pick whichever correlation they want by
+rescaling; two aligned panels say the same thing honestly.
+
+## Install
 
 ```bash
 python -m venv .venv
@@ -29,57 +32,83 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
-## Utilisation
+## Usage
 
-### 1. Trouver une batterie
+### 1. Find candidate batteries
 
-Elexon ne publie pas de `fuelType = BATTERY` fiable. Le script repère les unités
-bidirectionnelles — capables à la fois d'importer et d'exporter — et écarte le
-pompage-turbinage connu.
-
-```bash
-python src/discover_batteries.py --min-mw 50
-```
-
-La liste complète est écrite dans `data/battery_bmus.csv`. Retenir un
-identifiant `bmUnit` (par exemple `T_XXXXX-1`).
-
-### 2. Télécharger les données
+Elexon publishes no reliable `fuelType = BATTERY`. What identifies a battery is
+that it imports about as much as it exports — a ratio close to 1, where a
+950 MW CCGT drawing 10 MW of station load gives 0.01.
 
 ```bash
-python src/fetch.py --bmu T_XXXXX-1 --day 2026-06-18 --months 12
+python src/discover_batteries.py --min-mw 20
 ```
 
-L'historique de douze mois est récupéré par tranches de sept jours ; comptez
-quelques minutes. Pour un essai rapide, `--months 0` ne prend que la journée.
+Writes `data/battery_bmus.csv`.
 
-### 3. Construire la figure
+### 2. Screen them for actual activity
+
+Installed capacity is a poor guide. Several large batteries submit a physical
+notification flat at zero and record no acceptances at all — nothing to plot.
+This step samples a recent window and ranks candidates on what they really do.
 
 ```bash
-python src/make_figure.py --bmu T_XXXXX-1 --day 2026-06-18 --name "Nom du site"
+python src/screen_units.py --units 25 --days 14
 ```
 
-Résultat dans `figures/`.
+Writes `data/screening.csv`.
 
-## Choisir une bonne journée
+### 3. Pick a day worth plotting
 
-Une journée intéressante est une journée où le prix bouge : pointe du soir
-marquée, épisode de prix négatifs, ou tension sur le système. Les journées
-plates donnent une figure plate.
+A flat price day gives a flat figure. This ranks recent days by intraday price
+dispersion; `--by negativePeriods` favours days with negative prices, which
+show the charging side most clearly.
 
-## Structure
-
-```
-src/elexon.py              client API (aucune clef requise)
-src/discover_batteries.py  identification des batteries
-src/fetch.py               téléchargement et cache CSV
-src/make_figure.py         figure
-data/                      cache local (les gros fichiers ne sont pas versionnés)
-figures/                   sorties
+```bash
+python src/pick_day.py --days 120
 ```
 
-## Note sur le pas de temps
+### 4. Download and plot
 
-Le marché britannique fonctionne en périodes de règlement d'une demi-heure. Le
-marché belge, comme la plupart des marchés continentaux, raisonne au quart
-d'heure. La granularité de la figure est donc celle de GB, pas celle d'Elia.
+```bash
+python src/fetch.py --bmu E_STALB-1 --day 2026-07-25 --months 12
+python src/make_figure.py --bmu E_STALB-1 --day 2026-07-25 \
+    --name "KXP Immingham BESS — 81 MW, UK" --stat mean
+```
+
+Output lands in `figures/`. `--lang fr` switches the figure labels to French;
+`--stat median` is more robust but understates an asset that is idle much of
+the time.
+
+## Physical notifications are not the whole story
+
+Many GB batteries submit a flat zero PN and only move when the system operator
+accepts a bid or an offer. Their real operating profile lives in the bid-offer
+acceptances (BOALF), not in the PN. The scripts download both and build an
+effective profile: the PN, overridden by accepted levels wherever an acceptance
+applies.
+
+One consequence worth stating plainly: **the imbalance price is not the price a
+battery arbitrages against.** A battery takes positions day-ahead and intraday;
+the imbalance price only applies to its unbalanced volume. And part of the
+profile comes from acceptances — the system operator ordering the move, for
+balancing or for a local network constraint, regardless of the sign of the
+system price. The figure shows a loose correlation, not a control loop.
+
+## Layout
+
+```
+src/elexon.py              API client (no key required)
+src/discover_batteries.py  identify batteries in the BM Unit reference list
+src/screen_units.py        rank candidates by actual activity
+src/pick_day.py            find a day with price movement
+src/fetch.py               download and cache to CSV
+src/make_figure.py         build the figure
+data/                      local cache (large files are not versioned)
+figures/                   output
+```
+
+## A note on resolution
+
+Great Britain settles in half-hour periods. Belgium, like most continental
+markets, works in quarter-hours. The resolution here is GB's, not Elia's.
