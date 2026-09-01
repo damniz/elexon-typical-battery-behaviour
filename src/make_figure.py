@@ -29,6 +29,43 @@ FIGURES = ROOT / "figures"
 
 TZ = "Europe/London"
 
+LABELS = {
+    "en": {
+        "title": "The same battery, two horizons",
+        "day": "One day — {date:%d %B %Y}, half-hourly",
+        "price": "System imbalance price, same day",
+        "typical": "Twelve months — {stat} profile by time of day",
+        "stat_median": "median",
+        "stat_mean": "mean",
+        "discharge": "discharging",
+        "charge": "charging",
+        "negative": "negative prices",
+        "band": "25–75% range",
+        "power_axis": "MW",
+        "price_axis": "GBP / MWh",
+        "source": "Data: Elexon Insights (BMRS), data.elexon.co.uk",
+        "source_boalf": "  ·  profile = physical notification + bid-offer acceptances",
+    },
+    "fr": {
+        "title": "La même batterie, deux horizons",
+        "day": "Une journée — {date:%d/%m/%Y}, pas demi-horaire",
+        "price": "Le prix de déséquilibre du système, le même jour",
+        "typical": "Douze mois — profil {stat} par heure de la journée",
+        "stat_median": "médian",
+        "stat_mean": "moyen",
+        "discharge": "décharge",
+        "charge": "charge",
+        "negative": "prix négatifs",
+        "band": "quartiles 25-75 %",
+        "power_axis": "MW",
+        "price_axis": "GBP / MWh",
+        "source": "Données : Elexon Insights (BMRS), data.elexon.co.uk",
+        "source_boalf": "  ·  profil = notification physique + acceptations d'offres",
+    },
+}
+
+L = LABELS["en"]
+
 # Palette divergente validee (bleu <-> rouge, midpoint gris) sur surface claire.
 SURFACE = "#fcfcfb"
 DISCHARGE = "#e34948"   # pole chaud : la batterie exporte
@@ -132,13 +169,13 @@ def panel_day(ax, power: pd.Series) -> None:
     ax.plot(power.index, power.values, color=SURFACE, linewidth=2)
     ax.axhline(0, color=AXIS, linewidth=1.2)
 
-    ax.set_ylabel("MW", color=INK_SECONDARY)
+    ax.set_ylabel(L["power_axis"], color=INK_SECONDARY)
     ax.xaxis.set_major_formatter(mpl.dates.DateFormatter("%H:%M", tz=power.index.tz))
     ax.xaxis.set_major_locator(mpl.dates.HourLocator(interval=4))
 
-    ax.annotate("décharge", xy=(0.012, 0.90), xycoords="axes fraction",
+    ax.annotate(L["discharge"], xy=(0.012, 0.90), xycoords="axes fraction",
                 color=DISCHARGE, fontsize=15, fontweight="bold")
-    ax.annotate("charge", xy=(0.012, 0.06), xycoords="axes fraction",
+    ax.annotate(L["charge"], xy=(0.012, 0.06), xycoords="axes fraction",
                 color=CHARGE, fontsize=15, fontweight="bold")
     reach = float(max(abs(power.max()), abs(power.min()))) * 1.18
     ax.set_ylim(-reach, reach)
@@ -166,7 +203,7 @@ def shade_spans(ax, spans: list[tuple], label: bool = False) -> None:
     for index, (begin, finish) in enumerate(spans):
         ax.axvspan(begin, finish, color=MUTED, alpha=0.13, linewidth=0, zorder=0)
         if label and index == 0:
-            ax.annotate("prix négatifs", xy=(finish, ax.get_ylim()[1]),
+            ax.annotate(L["negative"], xy=(finish, ax.get_ylim()[1]),
                         xytext=(6, -18), textcoords="offset points",
                         fontsize=13, color=INK_SECONDARY)
 
@@ -176,7 +213,7 @@ def panel_price(ax, prices: pd.DataFrame) -> None:
     values = pd.to_numeric(prices["systemSellPrice"], errors="coerce")
     ax.step(times, values, where="post", color=INK, linewidth=2)
     ax.axhline(0, color=AXIS, linewidth=1.2)
-    ax.set_ylabel("GBP / MWh", color=INK_SECONDARY)
+    ax.set_ylabel(L["price_axis"], color=INK_SECONDARY)
     ax.xaxis.set_major_formatter(mpl.dates.DateFormatter("%H:%M", tz=times.dt.tz))
     ax.xaxis.set_major_locator(mpl.dates.HourLocator(interval=4))
     _tidy(ax)
@@ -204,10 +241,10 @@ def panel_typical(ax, power: pd.Series, stat: str = "median") -> None:
     ax.set_xlim(0, 24)
     ax.set_xticks(range(0, 25, 4))
     ax.set_xticklabels([f"{h:02d}:00" for h in range(0, 25, 4)])
-    ax.set_ylabel("MW", color=INK_SECONDARY)
+    ax.set_ylabel(L["power_axis"], color=INK_SECONDARY)
     ax.legend(
         handles=[Line2D([0], [0], color=MUTED, alpha=0.4, linewidth=10,
-                        label="quartiles 25-75 %")],
+                        label=L["band"])],
         loc="upper left", frameon=False, fontsize=13, labelcolor=INK_SECONDARY)
     _tidy(ax)
 
@@ -216,12 +253,17 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--bmu", required=True)
     parser.add_argument("--day", required=True, help="format YYYY-MM-DD")
+    parser.add_argument("--lang", choices=["en", "fr"], default="en",
+                        help="langue des libelles de la figure")
     parser.add_argument("--stat", choices=["median", "mean"], default="median",
                         help="statistique du panneau long : mediane (robuste) ou moyenne "
                              "(qui rend compte de l'energie nette)")
     parser.add_argument("--name", default=None,
                         help="nom lisible de la batterie pour le titre")
     args = parser.parse_args()
+
+    global L
+    L = LABELS[args.lang]
 
     day = date.fromisoformat(args.day)
     slug = args.bmu.replace("/", "-")
@@ -252,12 +294,12 @@ def main() -> None:
     spans = negative_price_spans(prices)
     panel_day(axes[0], day_power)
     shade_spans(axes[0], spans, label=True)
-    axes[0].set_title(f"Une journée — {day:%d/%m/%Y}, pas demi-horaire",
+    axes[0].set_title(L["day"].format(date=day),
                       loc="left", color=INK, fontweight="bold", pad=12)
 
     panel_price(axes[1], prices)
     shade_spans(axes[1], spans)
-    axes[1].set_title("Le prix de déséquilibre du système, le même jour",
+    axes[1].set_title(L["price"],
                       loc="left", color=INK, fontweight="bold", pad=12)
     # même fenêtre temporelle que le panneau du dessus : les deux se lisent ensemble
     axes[1].set_xlim(axes[0].get_xlim())
@@ -270,17 +312,17 @@ def main() -> None:
                                       freq="5min", tz=TZ)
         history_power, _ = effective_profile(history_pn, history_boalf, history_index)
         panel_typical(axes[2], history_power, stat=args.stat)
-        wording = "médian" if args.stat == "median" else "moyen"
-        axes[2].set_title(f"Douze mois — profil {wording} par heure de la journée",
+        wording = L["stat_median"] if args.stat == "median" else L["stat_mean"]
+        axes[2].set_title(L["typical"].format(stat=wording),
                           loc="left", color=INK, fontweight="bold", pad=12)
 
-    fig.suptitle("La même batterie, deux horizons",
+    fig.suptitle(L["title"],
                  x=0.055, y=0.985, ha="left", fontsize=22,
                  fontweight="bold", color=INK)
     fig.text(0.055, 0.938, label, ha="left", fontsize=15, color=INK_SECONDARY)
-    source = "Données : Elexon Insights (BMRS), data.elexon.co.uk"
+    source = L["source"]
     if day_had_acceptances:
-        source += "  ·  profil = PN + acceptations d'offres"
+        source += L["source_boalf"]
     fig.text(0.055, 0.012, source,
              fontsize=12, color=MUTED)
 
